@@ -1,0 +1,11 @@
+{
+  "port": 8888,
+  "upstreamBaseUrl": "https://api.openai.com",
+  "upstreamApiKey": "",
+  "upstreamHost": "",
+  "requestTimeoutMs": 600000,
+  "retryAttempts": 10,
+  "retryIntervalMs": 3000,
+  "enableRequestLogging": true,
+  "thinkingRestore": false
+}
