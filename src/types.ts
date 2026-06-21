@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse, Server } from "node:http";
 export interface ProxyConfig {
   port: number | null;
   upstreamBaseUrl: string;
-  upstreamApiKey: string;
+  upstreamApiKey: string | string[];
   upstreamHost: string;
   requestTimeoutMs: number;
   retryAttempts: number;
@@ -14,7 +14,7 @@ export interface ProxyConfig {
 
 export interface RouteResult {
   upstreamPath: string;
-  callType: "completion" | "responses" | null;
+  callType: "completion" | "responses" | "messages" | null;
 }
 
 export interface AttemptResult {

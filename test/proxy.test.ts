@@ -5,6 +5,7 @@ import {
   createProxyServer,
   route,
   maybeApplyFix,
+  applyMessagesFix,
   resolveConfig,
 } from "../src/proxy.js";
 import {
@@ -33,6 +34,13 @@ test("route forwards /v1/models verbatim (no prefill fix)", () => {
   assert.deepEqual(route("/v1/models"), {
     upstreamPath: "/v1/models",
     callType: null,
+  });
+});
+
+test("route maps /v1/messages to the messages call type", () => {
+  assert.deepEqual(route("/v1/messages"), {
+    upstreamPath: "/v1/messages",
+    callType: "messages",
   });
 });
 
@@ -67,6 +75,39 @@ test("maybeApplyFix strips the internal _callType field", () => {
     "completion",
   );
   assert.equal(JSON.parse(out.toString())._callType, undefined);
+});
+
+test("applyMessagesFix overwrites metadata with session_id user_id", () => {
+  const out = applyMessagesFix(
+    Buffer.from(
+      JSON.stringify({
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "hi" }],
+        metadata: { user_id: "old-value", extra: "gone" },
+      }),
+    ),
+  );
+  const parsed = JSON.parse(out.toString());
+  assert.deepEqual(parsed.metadata, {
+    user_id: '{"session_id":"fufu"}',
+  });
+});
+
+test("applyMessagesFix adds metadata when missing", () => {
+  const out = applyMessagesFix(
+    Buffer.from(
+      JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    ),
+  );
+  const parsed = JSON.parse(out.toString());
+  assert.deepEqual(parsed.metadata, {
+    user_id: '{"session_id":"fufu"}',
+  });
+});
+
+test("applyMessagesFix passes through non-JSON bodies", () => {
+  const buf = Buffer.from("not json");
+  assert.equal(applyMessagesFix(buf), buf);
 });
 
 async function boot(
@@ -283,7 +324,7 @@ test("e2e: upstream API key is injected when caller omits Authorization", async 
   }
 });
 
-test("e2e: caller Authorization is forwarded and preferred over the configured key", async () => {
+test("e2e: configured upstreamApiKey is preferred over caller Authorization", async () => {
   let authHeader: string | undefined;
   const { proxy, upstream } = await boot({
     upstreamHandler: async (req, res) => {
@@ -300,7 +341,103 @@ test("e2e: caller Authorization is forwarded and preferred over the configured k
       headers: { authorization: "Bearer caller-key" },
       body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
     });
+    assert.equal(authHeader, "Bearer test-key");
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
+test("e2e: caller Authorization is used as fallback when no upstreamApiKey", async () => {
+  let authHeader: string | undefined;
+  const { proxy, upstream } = await boot(
+    {
+      upstreamHandler: async (req, res) => {
+        authHeader = req.headers["authorization"];
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      },
+    },
+    { upstreamApiKey: "" },
+  );
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      headers: { authorization: "Bearer caller-key" },
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
     assert.equal(authHeader, "Bearer caller-key");
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
+test("e2e: upstreamApiKey array rotates round-robin across requests", async () => {
+  const seen: string[] = [];
+  const { proxy, upstream } = await boot(
+    {
+      upstreamHandler: async (req, res) => {
+        seen.push(req.headers["authorization"] ?? "");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      },
+    },
+    { upstreamApiKey: ["key-a", "key-b", "key-c"] },
+  );
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    for (let i = 0; i < 6; i++) {
+      await proxyRequest(port, {
+        path: "/v1/chat/completions",
+        body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      });
+    }
+    assert.deepEqual(seen, [
+      "Bearer key-a",
+      "Bearer key-b",
+      "Bearer key-c",
+      "Bearer key-a",
+      "Bearer key-b",
+      "Bearer key-c",
+    ]);
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
+test("e2e: /v1/messages overwrites metadata and sets anthropic-version header", async () => {
+  let captured: any;
+  let versionHeader: string | undefined;
+  const { proxy, upstream } = await boot({
+    upstreamHandler: async (req, res) => {
+      versionHeader = req.headers["anthropic-version"] as string | undefined;
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      captured = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    },
+  });
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    await proxyRequest(port, {
+      path: "/v1/messages",
+      body: {
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "hi" }],
+        metadata: { user_id: "original" },
+      },
+    });
+    assert.equal(versionHeader, "2023-06-01");
+    assert.deepEqual(captured.metadata, {
+      user_id: '{"session_id":"fufu"}',
+    });
   } finally {
     await close(proxy);
     await close(upstream);

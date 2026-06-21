@@ -43,7 +43,9 @@ export function resolveConfig(opts: CreateProxyOpts = {}): ProxyConfig {
   return {
     port: parseInt(String(pick("port", 0)), 10) || null,
     upstreamBaseUrl: upstreamBase,
-    upstreamApiKey: String(pick("upstreamApiKey", DEFAULTS.upstreamApiKey)),
+    upstreamApiKey: pick("upstreamApiKey", DEFAULTS.upstreamApiKey) as
+      | string
+      | string[],
     upstreamHost: String(
       pick("upstreamHost", "") || new URL(upstreamBase).host,
     ),

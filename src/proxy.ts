@@ -166,10 +166,21 @@ function sleep(ms: number): Promise<void> {
 export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
   const config = resolveConfig(opts);
 
+  const upstreamKeys: string[] = Array.isArray(config.upstreamApiKey)
+    ? config.upstreamApiKey.filter((k): k is string => typeof k === "string" && k.length > 0)
+    : typeof config.upstreamApiKey === "string" && config.upstreamApiKey.length > 0
+      ? [config.upstreamApiKey]
+      : [];
+  let keyIndex = 0;
+
   function resolveAuth(req: IncomingMessage): string | null {
+    if (upstreamKeys.length > 0) {
+      const key = upstreamKeys[keyIndex % upstreamKeys.length];
+      keyIndex = (keyIndex + 1) % upstreamKeys.length;
+      return `Bearer ${key}`;
+    }
     const hdr = req.headers["authorization"];
     if (hdr) return hdr;
-    if (config.upstreamApiKey) return `Bearer ${config.upstreamApiKey}`;
     return null;
   }
 
@@ -177,6 +188,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     req: IncomingMessage,
     auth: string | null,
     bodyLen: number,
+    upstreamPath: string,
   ): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -187,6 +199,9 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     if (auth) out["authorization"] = auth;
     if (bodyLen > 0) out["content-length"] = String(bodyLen);
     if (!out["accept"]) out["accept"] = "application/json";
+    if (upstreamPath === "/v1/messages") {
+      out["anthropic-version"] = "2023-06-01";
+    }
     return out;
   }
 
@@ -209,7 +224,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
       return Promise.resolve({ ok: true, committed: true });
     }
 
-    const outHeaders = buildUpstreamHeaders(req, auth, body ? body.length : 0);
+    const outHeaders = buildUpstreamHeaders(req, auth, body ? body.length : 0, upstreamPath);
     const transport = upstream.protocol === "https:" ? https : http;
     const reqMethod = req.method ?? "?";
 
@@ -413,9 +428,14 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
 
     try {
       const raw = await readBody(req);
-      let body: Buffer = routed.callType
-        ? maybeApplyFix(raw, routed.callType)
-        : raw;
+      let body: Buffer;
+      if (routed.callType === "messages") {
+        body = applyMessagesFix(raw);
+      } else if (routed.callType) {
+        body = maybeApplyFix(raw, routed.callType);
+      } else {
+        body = raw;
+      }
 
       if (config.enableRequestLogging) {
         let parsedBody: Record<string, unknown> | null = null;
@@ -494,6 +514,19 @@ export function maybeApplyFix(buf: Buffer, callType: string): Buffer {
   return Buffer.from(JSON.stringify(body));
 }
 
+export function applyMessagesFix(buf: Buffer): Buffer {
+  if (!buf || buf.length === 0) return buf;
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+  } catch {
+    return buf;
+  }
+  if (!body || typeof body !== "object") return buf;
+  body.metadata = { user_id: '{"session_id":"fufu"}' };
+  return Buffer.from(JSON.stringify(body));
+}
+
 export function route(pathname: string): RouteResult | null {
   if (pathname === "/v1/chat/completions") {
     return { upstreamPath: "/v1/chat/completions", callType: "completion" };
@@ -503,6 +536,9 @@ export function route(pathname: string): RouteResult | null {
   }
   if (pathname === "/v1/completions") {
     return { upstreamPath: "/v1/completions", callType: "completion" };
+  }
+  if (pathname === "/v1/messages") {
+    return { upstreamPath: "/v1/messages", callType: "messages" };
   }
   if (pathname.startsWith("/v1/")) {
     return { upstreamPath: pathname, callType: null };
