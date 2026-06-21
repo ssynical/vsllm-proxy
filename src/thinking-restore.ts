@@ -1,8 +1,15 @@
 import type { ThinkingProps } from "./types.js";
 
-const THINKING_KEYS = ["thinking", "thinking_budget", "reasoning_effort", "reasoning"] as const;
+const THINKING_KEYS = [
+  "thinking",
+  "thinking_budget",
+  "reasoning_effort",
+  "reasoning",
+] as const;
 
-export function extractThinkingProps(body: Record<string, unknown> | null | undefined): ThinkingProps {
+export function extractThinkingProps(
+  body: Record<string, unknown> | null | undefined,
+): ThinkingProps {
   if (!body || typeof body !== "object") return {};
   const props: ThinkingProps = {};
 
@@ -28,7 +35,7 @@ export function formatThinkingLog(props: ThinkingProps): string {
 
 export function applyThinkingRestore(
   body: Record<string, unknown> | null | undefined,
-  enabled: boolean
+  enabled: boolean,
 ): boolean {
   if (!enabled) return false;
   if (!body || typeof body !== "object") return false;

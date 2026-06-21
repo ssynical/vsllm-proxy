@@ -1,10 +1,20 @@
 import * as http from "node:http";
 import * as https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ProxyConfig, ProxyServer, RouteResult, AttemptResult, CreateProxyOpts } from "./types.js";
+import type {
+  ProxyConfig,
+  ProxyServer,
+  RouteResult,
+  AttemptResult,
+  CreateProxyOpts,
+} from "./types.js";
 import { resolveConfig, resolvePort } from "./config.js";
 import { applyPrefillFix, modelNeedsFix } from "./prefill-fix.js";
-import { extractThinkingProps, formatThinkingLog, applyThinkingRestore } from "./thinking-restore.js";
+import {
+  extractThinkingProps,
+  formatThinkingLog,
+  applyThinkingRestore,
+} from "./thinking-restore.js";
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -21,6 +31,54 @@ const HOP_BY_HOP = new Set([
 
 const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
+function flattenHeaders(
+  headers: IncomingMessage["headers"],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v !== undefined) out[k] = Array.isArray(v) ? v[0] : v;
+  }
+  return out;
+}
+
+function logFailure(
+  tag: string,
+  method: string | undefined,
+  path: string,
+  clientHeaders: Record<string, string>,
+  upstreamHeaders: Record<string, string>,
+  reqBody: Buffer | null,
+  resHeaders: Record<string, string> | null,
+  resBody: Buffer | null,
+  resStatus: number | null,
+  reason: string,
+): void {
+  const clientHeadersStr = JSON.stringify(clientHeaders, null, 2);
+  const upstreamHeadersStr = JSON.stringify(upstreamHeaders, null, 2);
+  const reqBodyStr =
+    reqBody && reqBody.length
+      ? reqBody.toString("utf8").slice(0, 4096)
+      : "(empty)";
+  const resHeadersStr = resHeaders
+    ? JSON.stringify(resHeaders, null, 2)
+    : "(no response)";
+  const resBodyStr =
+    resBody && resBody.length
+      ? resBody.toString("utf8").slice(0, 4096)
+      : "(empty)";
+
+  console.error(
+    `[vsllm-proxy] ${tag} FAILURE ${method ?? "?"} ${path}\n` +
+      `  reason: ${reason}\n` +
+      `  status: ${resStatus ?? "N/A"}\n` +
+      `  client request headers:\n  ${clientHeadersStr}\n` +
+      `  upstream request headers:\n  ${upstreamHeadersStr}\n` +
+      `  request body:\n  ${reqBodyStr}\n` +
+      `  response headers:\n  ${resHeadersStr}\n` +
+      `  response body:\n  ${resBodyStr}`,
+  );
+}
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -30,7 +88,20 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
-function respond(res: ServerResponse, status: number, obj: Record<string, unknown>): void {
+function readStreamBody(stream: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    stream.on("data", (c: Buffer) => chunks.push(c));
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+    stream.on("error", reject);
+  });
+}
+
+function respond(
+  res: ServerResponse,
+  status: number,
+  obj: Record<string, unknown>,
+): void {
   if (res.headersSent || res.writableEnded) return;
   const body = Buffer.from(JSON.stringify(obj));
   res.writeHead(status, {
@@ -57,7 +128,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
   function buildUpstreamHeaders(
     req: IncomingMessage,
     auth: string | null,
-    bodyLen: number
+    bodyLen: number,
   ): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -75,7 +146,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     req: IncomingMessage,
     res: ServerResponse,
     upstreamPath: string,
-    body: Buffer | null
+    body: Buffer | null,
   ): Promise<AttemptResult> {
     const upstream = new URL(upstreamPath, config.upstreamBaseUrl);
     const auth = resolveAuth(req);
@@ -92,6 +163,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
 
     const outHeaders = buildUpstreamHeaders(req, auth, body ? body.length : 0);
     const transport = upstream.protocol === "https:" ? https : http;
+    const reqMethod = req.method ?? "?";
 
     return new Promise((resolve) => {
       let connectionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -101,7 +173,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
           protocol: upstream.protocol,
           hostname: upstream.hostname,
           port: upstream.port || (upstream.protocol === "https:" ? 443 : 80),
-          method: req.method,
+          method: reqMethod,
           path: `${upstream.pathname}${upstream.search}`,
           headers: outHeaders,
         },
@@ -114,13 +186,44 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
           const status = upRes.statusCode || 502;
 
           if (RETRY_STATUS.has(status)) {
-            upRes.resume();
-            upRes.on("end", () =>
-              resolve({ ok: false, status, reason: `status ${status}` })
-            );
-            upRes.on("error", () =>
-              resolve({ ok: false, status, reason: `status ${status}` })
-            );
+            // Capture response body and headers for failure logging
+            const capturedHeaders: Record<string, string> = {};
+            for (const [k, v] of Object.entries(upRes.headers)) {
+              capturedHeaders[k] = Array.isArray(v) ? v[0] : (v ?? "");
+            }
+
+            const clientHeaders = flattenHeaders(req.headers);
+            readStreamBody(upRes)
+              .then((resBody) => {
+                logFailure(
+                  "retry",
+                  reqMethod,
+                  upstreamPath,
+                  clientHeaders,
+                  outHeaders,
+                  body,
+                  capturedHeaders,
+                  resBody,
+                  status,
+                  `status ${status}`,
+                );
+                resolve({ ok: false, status, reason: `status ${status}` });
+              })
+              .catch(() => {
+                logFailure(
+                  "retry",
+                  reqMethod,
+                  upstreamPath,
+                  clientHeaders,
+                  outHeaders,
+                  body,
+                  capturedHeaders,
+                  null,
+                  status,
+                  `status ${status}`,
+                );
+                resolve({ ok: false, status, reason: `status ${status}` });
+              });
             return;
           }
 
@@ -139,14 +242,16 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
 
           upRes.on("error", () => {
             if (!res.writableEnded) {
-              try { res.end(); } catch {}
+              try {
+                res.end();
+              } catch {}
             }
             resolve({ ok: true, committed: true });
           });
 
           upRes.pipe(res, { end: true });
           upRes.on("end", () => resolve({ ok: true, committed: true }));
-        }
+        },
       );
 
       connectionTimer = setTimeout(() => {
@@ -159,6 +264,18 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
           clearTimeout(connectionTimer);
           connectionTimer = null;
         }
+        logFailure(
+          "error",
+          reqMethod,
+          upstreamPath,
+          flattenHeaders(req.headers),
+          outHeaders,
+          body,
+          null,
+          null,
+          null,
+          err.message,
+        );
         resolve({ ok: false, reason: err.message });
       });
 
@@ -171,7 +288,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     req: IncomingMessage,
     res: ServerResponse,
     upstreamPath: string,
-    body: Buffer | null
+    body: Buffer | null,
   ): Promise<void> {
     let lastReason = "no attempts";
     for (let attempt = 1; attempt <= config.retryAttempts; attempt++) {
@@ -183,7 +300,9 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
       const more = attempt < config.retryAttempts;
       console.warn(
         `[vsllm-proxy] upstream attempt ${attempt}/${config.retryAttempts} failed (${lastReason})` +
-          (more ? ` — retrying in ${config.retryIntervalMs}ms` : " — giving up")
+          (more
+            ? ` — retrying in ${config.retryIntervalMs}ms`
+            : " — giving up"),
       );
       if (more) await sleep(config.retryIntervalMs);
     }
@@ -196,12 +315,20 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
         },
       });
     } else if (!res.writableEnded) {
-      try { res.end(); } catch {}
+      try {
+        res.end();
+      } catch {}
     }
   }
 
-  const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  const handler = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> => {
+    const url = new URL(
+      req.url ?? "/",
+      `http://${req.headers.host ?? "localhost"}`,
+    );
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
 
     if (pathname === "/" || pathname === "/health" || pathname === "/healthz") {
@@ -230,25 +357,31 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
         let parsedBody: Record<string, unknown> | null = null;
         try {
           if (body && body.length) {
-            parsedBody = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+            parsedBody = JSON.parse(body.toString("utf8")) as Record<
+              string,
+              unknown
+            >;
           }
         } catch {
           parsedBody = null;
         }
 
         if (parsedBody) {
-          const restoreChanged = applyThinkingRestore(parsedBody, config.thinkingRestore);
+          const restoreChanged = applyThinkingRestore(
+            parsedBody,
+            config.thinkingRestore,
+          );
           if (restoreChanged) {
             body = Buffer.from(JSON.stringify(parsedBody));
           }
 
           const props = extractThinkingProps(parsedBody);
           console.log(
-            `[vsllm-proxy] ${req.method} ${pathname} ${formatThinkingLog(props)}`
+            `[vsllm-proxy] ${req.method} ${pathname} ${formatThinkingLog(props)}`,
           );
         } else {
           console.log(
-            `[vsllm-proxy] ${req.method} ${pathname} body=non-JSON|empty`
+            `[vsllm-proxy] ${req.method} ${pathname} body=non-JSON|empty`,
           );
         }
       }
@@ -258,12 +391,18 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
       if (!res.headersSent && !res.writableEnded) {
         respond(res, 500, {
           error: {
-            message: String((err && typeof err === "object" && "message" in err ? err.message : err) || err),
+            message: String(
+              (err && typeof err === "object" && "message" in err
+                ? err.message
+                : err) || err,
+            ),
             type: "proxy_error",
           },
         });
       } else if (!res.writableEnded) {
-        try { res.end(); } catch {}
+        try {
+          res.end();
+        } catch {}
       }
     }
   };
@@ -309,4 +448,8 @@ export function route(pathname: string): RouteResult | null {
 
 export { resolveConfig, resolvePort, loadConfigFile } from "./config.js";
 export { modelNeedsFix } from "./prefill-fix.js";
-export { extractThinkingProps, formatThinkingLog, applyThinkingRestore } from "./thinking-restore.js";
+export {
+  extractThinkingProps,
+  formatThinkingLog,
+  applyThinkingRestore,
+} from "./thinking-restore.js";

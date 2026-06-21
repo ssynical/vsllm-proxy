@@ -24,7 +24,10 @@ test("modelNeedsFix does not match older Claude models", () => {
 });
 
 test("buildUserMessage returns a plain continue when no tool_use", () => {
-  assert.deepEqual(buildUserMessage("text"), { role: "user", content: "continue" });
+  assert.deepEqual(buildUserMessage("text"), {
+    role: "user",
+    content: "continue",
+  });
   assert.deepEqual(buildUserMessage([{ type: "text", text: "hi" }]), {
     role: "user",
     content: "continue",

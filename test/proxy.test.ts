@@ -1,8 +1,17 @@
 import test from "node:test";
 import assert from "node:assert";
 import http from "node:http";
-import { createProxyServer, route, maybeApplyFix, resolveConfig } from "../src/proxy.js";
-import { extractThinkingProps, formatThinkingLog, applyThinkingRestore } from "../src/thinking-restore.js";
+import {
+  createProxyServer,
+  route,
+  maybeApplyFix,
+  resolveConfig,
+} from "../src/proxy.js";
+import {
+  extractThinkingProps,
+  formatThinkingLog,
+  applyThinkingRestore,
+} from "../src/thinking-restore.js";
 import type { ProxyServer } from "../src/types.js";
 
 test("route maps the three primary endpoints", () => {
@@ -53,16 +62,23 @@ test("maybeApplyFix strips the internal _callType field", () => {
           { role: "user", content: "hi" },
           { role: "assistant", content: "hi back" },
         ],
-      })
+      }),
     ),
-    "completion"
+    "completion",
   );
   assert.equal(JSON.parse(out.toString())._callType, undefined);
 });
 
 async function boot(
-  { upstreamHandler }: { upstreamHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void },
-  proxyOpts: Record<string, unknown> = {}
+  {
+    upstreamHandler,
+  }: {
+    upstreamHandler: (
+      req: http.IncomingMessage,
+      res: http.ServerResponse,
+    ) => void;
+  },
+  proxyOpts: Record<string, unknown> = {},
 ): Promise<{ proxy: ProxyServer; upstream: http.Server }> {
   const upstream = http.createServer(upstreamHandler);
   await new Promise<void>((r) => upstream.listen(0, r));
@@ -79,13 +95,27 @@ async function boot(
 }
 
 function close(srv: http.Server | ProxyServer): Promise<void> {
-  return new Promise((r) => srv.close(r));
+  return new Promise((r) => srv.close(() => r()));
 }
 
 function proxyRequest(
   port: number,
-  { path, method = "POST", headers = {}, body }: { path: string; method?: string; headers?: Record<string, string>; body?: any }
-): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  {
+    path,
+    method = "POST",
+    headers = {},
+    body,
+  }: {
+    path: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: any;
+  },
+): Promise<{
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+}> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -103,10 +133,10 @@ function proxyRequest(
             status: res.statusCode ?? 0,
             headers: res.headers,
             body: Buffer.concat(chunks).toString("utf8"),
-          })
+          }),
         );
         res.on("error", reject);
-      }
+      },
     );
     req.on("error", reject);
     if (body) req.write(typeof body === "string" ? body : JSON.stringify(body));
@@ -322,7 +352,7 @@ test("e2e: gives up after retryAttempts and returns 502", async () => {
         res.end(JSON.stringify({ error: "rate limited" }));
       },
     },
-    { retryAttempts: 3, retryIntervalMs: 5 }
+    { retryAttempts: 3, retryIntervalMs: 5 },
   );
 
   try {
@@ -456,7 +486,7 @@ test("e2e: logs model and thinking properties to stdout", async () => {
 
     assert.equal(captured.model, "claude-sonnet-4-6");
     const logLine = logs.find((l) =>
-      l.includes("[vsllm-proxy] POST /v1/chat/completions")
+      l.includes("[vsllm-proxy] POST /v1/chat/completions"),
     );
     assert.ok(logLine, `expected log line, got: ${logs.join("\n")}`);
     assert.ok(logLine.includes("model=claude-sonnet-4-6"), logLine);
@@ -488,7 +518,7 @@ test("e2e: logs non-JSON body correctly", async () => {
     });
 
     const logLine = logs.find((l) =>
-      l.includes("[vsllm-proxy] POST /v1/chat/completions")
+      l.includes("[vsllm-proxy] POST /v1/chat/completions"),
     );
     assert.ok(logLine, `expected log line, got: ${logs.join("\n")}`);
     assert.ok(logLine.includes("body=non-JSON|empty"), logLine);
@@ -511,7 +541,7 @@ test("e2e: logging disabled when enableRequestLogging is false", async () => {
         res.end(JSON.stringify({ ok: true }));
       },
     },
-    { enableRequestLogging: false }
+    { enableRequestLogging: false },
   );
 
   try {
@@ -522,7 +552,7 @@ test("e2e: logging disabled when enableRequestLogging is false", async () => {
     });
 
     const logLine = logs.find((l) =>
-      l.includes("[vsllm-proxy] POST /v1/chat/completions")
+      l.includes("[vsllm-proxy] POST /v1/chat/completions"),
     );
     assert.equal(logLine, undefined, "logging should be silent when disabled");
   } finally {

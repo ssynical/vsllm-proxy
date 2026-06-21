@@ -24,7 +24,9 @@ export function loadConfigFile(): Record<string, unknown> {
     return (JSON.parse(raw) as Record<string, unknown>) || {};
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn(`[vsllm-proxy] could not parse ${file}: ${(err as Error).message}`);
+      console.warn(
+        `[vsllm-proxy] could not parse ${file}: ${(err as Error).message}`,
+      );
     }
     return {};
   }
@@ -35,16 +37,32 @@ export function resolveConfig(opts: CreateProxyOpts = {}): ProxyConfig {
   const pick = (key: keyof ProxyConfig, dflt: unknown) =>
     opts[key] ?? file[key] ?? dflt;
 
-  const upstreamBase = String(pick("upstreamBaseUrl", DEFAULTS.upstreamBaseUrl)).replace(/\/+$/, "");
+  const upstreamBase = String(
+    pick("upstreamBaseUrl", DEFAULTS.upstreamBaseUrl),
+  ).replace(/\/+$/, "");
   return {
     port: parseInt(String(pick("port", 0)), 10) || null,
     upstreamBaseUrl: upstreamBase,
     upstreamApiKey: String(pick("upstreamApiKey", DEFAULTS.upstreamApiKey)),
-    upstreamHost: String(pick("upstreamHost", "") || new URL(upstreamBase).host),
-    requestTimeoutMs: parseInt(String(pick("requestTimeoutMs", DEFAULTS.requestTimeoutMs)), 10),
-    retryAttempts: parseInt(String(pick("retryAttempts", DEFAULTS.retryAttempts)), 10),
-    retryIntervalMs: parseInt(String(pick("retryIntervalMs", DEFAULTS.retryIntervalMs)), 10),
-    enableRequestLogging: !!pick("enableRequestLogging", DEFAULTS.enableRequestLogging),
+    upstreamHost: String(
+      pick("upstreamHost", "") || new URL(upstreamBase).host,
+    ),
+    requestTimeoutMs: parseInt(
+      String(pick("requestTimeoutMs", DEFAULTS.requestTimeoutMs)),
+      10,
+    ),
+    retryAttempts: parseInt(
+      String(pick("retryAttempts", DEFAULTS.retryAttempts)),
+      10,
+    ),
+    retryIntervalMs: parseInt(
+      String(pick("retryIntervalMs", DEFAULTS.retryIntervalMs)),
+      10,
+    ),
+    enableRequestLogging: !!pick(
+      "enableRequestLogging",
+      DEFAULTS.enableRequestLogging,
+    ),
     thinkingRestore: !!pick("thinkingRestore", DEFAULTS.thinkingRestore),
   };
 }
