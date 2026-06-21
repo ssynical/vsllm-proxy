@@ -390,7 +390,10 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
       req.url ?? "/",
       `http://${req.headers.host ?? "localhost"}`,
     );
-    const pathname = url.pathname.replace(/\/+$/, "") || "/";
+    const pathname = (url.pathname.replace(/\/+$/, "") || "/").replace(
+      /^\/v1\/v1(\/|$)/,
+      "/v1$1",
+    );
 
     if (pathname === "/" || pathname === "/health" || pathname === "/healthz") {
       respond(res, 200, { status: "ok", upstream: config.upstreamBaseUrl });

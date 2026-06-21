@@ -212,6 +212,29 @@ test("e2e: non-Claude-4.6+ requests forward unchanged", async () => {
   }
 });
 
+test("e2e: /v1/v1 prefix is collapsed to /v1 before forwarding", async () => {
+  let hitPath: string | undefined;
+  const { proxy, upstream } = await boot({
+    upstreamHandler: async (req, res) => {
+      hitPath = req.url;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    },
+  });
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    await proxyRequest(port, {
+      path: "/v1/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(hitPath, "/v1/chat/completions");
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
 test("e2e: /v1/models forwards verbatim with no body mutation", async () => {
   let hitPath: string | undefined;
   const { proxy, upstream } = await boot({
