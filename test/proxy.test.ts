@@ -395,6 +395,50 @@ test("e2e: non-retryable status (400) is returned immediately, not retried", asy
   }
 });
 
+test("e2e: non-2xx response is logged with bodies and headers, then forwarded", async () => {
+  const errs: string[] = [];
+  const origErr = console.error;
+  console.error = (...args: any[]) => errs.push(args.join(" "));
+
+  const { proxy, upstream } = await boot({
+    upstreamHandler: (req, res) => {
+      res.writeHead(422, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "unprocessable" } }));
+    },
+  });
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    const out = await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      body: {
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "trigger-error" }],
+      },
+    });
+
+    // Response is still forwarded unchanged to the client.
+    assert.equal(out.status, 422);
+    assert.deepEqual(JSON.parse(out.body), {
+      error: { message: "unprocessable" },
+    });
+
+    const log = errs.find((l) => l.includes("upstream FAILURE"));
+    assert.ok(log, `expected failure log, got: ${errs.join("\n")}`);
+    assert.ok(log.includes("status: 422"), log);
+    assert.ok(log.includes("POST /v1/chat/completions"), log);
+    assert.ok(log.includes("client request headers:"), log);
+    assert.ok(log.includes("upstream request headers:"), log);
+    assert.ok(log.includes("response headers:"), log);
+    assert.ok(log.includes("trigger-error"), log); // request body
+    assert.ok(log.includes("unprocessable"), log); // response body
+  } finally {
+    console.error = origErr;
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
 test("resolveConfig reads config.json values", () => {
   const cfg = resolveConfig();
   assert.equal(cfg.retryAttempts, 10);

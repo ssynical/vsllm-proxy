@@ -97,6 +97,54 @@ function readStreamBody(stream: IncomingMessage): Promise<Buffer> {
   });
 }
 
+// Buffers the upstream response body and logs a failure with the request and
+// response details. Resolves with the captured body, or null if the body could
+// not be read (the failure is still logged in that case).
+function captureAndLogFailure(
+  tag: string,
+  method: string | undefined,
+  path: string,
+  clientHeaders: Record<string, string>,
+  upstreamHeaders: Record<string, string>,
+  reqBody: Buffer | null,
+  resHeaders: Record<string, string>,
+  stream: IncomingMessage,
+  resStatus: number | null,
+  reason: string,
+): Promise<Buffer | null> {
+  return readStreamBody(stream)
+    .then((resBody) => {
+      logFailure(
+        tag,
+        method,
+        path,
+        clientHeaders,
+        upstreamHeaders,
+        reqBody,
+        resHeaders,
+        resBody,
+        resStatus,
+        reason,
+      );
+      return resBody;
+    })
+    .catch(() => {
+      logFailure(
+        tag,
+        method,
+        path,
+        clientHeaders,
+        upstreamHeaders,
+        reqBody,
+        resHeaders,
+        null,
+        resStatus,
+        reason,
+      );
+      return null;
+    });
+}
+
 function respond(
   res: ServerResponse,
   status: number,
@@ -184,49 +232,62 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
           }
 
           const status = upRes.statusCode || 502;
+          const clientHeaders = flattenHeaders(req.headers);
+          const capturedHeaders = flattenHeaders(upRes.headers);
 
           if (RETRY_STATUS.has(status)) {
-            // Capture response body and headers for failure logging
-            const capturedHeaders: Record<string, string> = {};
-            for (const [k, v] of Object.entries(upRes.headers)) {
-              capturedHeaders[k] = Array.isArray(v) ? v[0] : (v ?? "");
-            }
-
-            const clientHeaders = flattenHeaders(req.headers);
-            readStreamBody(upRes)
-              .then((resBody) => {
-                logFailure(
-                  "retry",
-                  reqMethod,
-                  upstreamPath,
-                  clientHeaders,
-                  outHeaders,
-                  body,
-                  capturedHeaders,
-                  resBody,
-                  status,
-                  `status ${status}`,
-                );
-                resolve({ ok: false, status, reason: `status ${status}` });
-              })
-              .catch(() => {
-                logFailure(
-                  "retry",
-                  reqMethod,
-                  upstreamPath,
-                  clientHeaders,
-                  outHeaders,
-                  body,
-                  capturedHeaders,
-                  null,
-                  status,
-                  `status ${status}`,
-                );
-                resolve({ ok: false, status, reason: `status ${status}` });
-              });
+            captureAndLogFailure(
+              "retry",
+              reqMethod,
+              upstreamPath,
+              clientHeaders,
+              outHeaders,
+              body,
+              capturedHeaders,
+              upRes,
+              status,
+              `status ${status}`,
+            ).then(() =>
+              resolve({ ok: false, status, reason: `status ${status}` }),
+            );
             return;
           }
 
+          // Non-2xx, non-retryable: capture + log the request/response, then
+          // forward the buffered body to the client. Error bodies are small, so
+          // buffering them is preferable to losing them in a streamed pipe.
+          if (status < 200 || status >= 300) {
+            captureAndLogFailure(
+              "upstream",
+              reqMethod,
+              upstreamPath,
+              clientHeaders,
+              outHeaders,
+              body,
+              capturedHeaders,
+              upRes,
+              status,
+              `status ${status}`,
+            ).then((resBody) => {
+              if (!res.headersSent && !res.writableEnded) {
+                const fwdHeaders: Record<string, string | string[]> = {};
+                for (const [k, v] of Object.entries(upRes.headers)) {
+                  if (v === undefined) continue;
+                  const lk = k.toLowerCase();
+                  if (lk === "content-length" || lk === "transfer-encoding") {
+                    continue;
+                  }
+                  fwdHeaders[k] = v;
+                }
+                res.writeHead(status, fwdHeaders);
+                res.end(resBody ?? "");
+              }
+              resolve({ ok: true, committed: true });
+            });
+            return;
+          }
+
+          // 2xx: stream the response straight through.
           if (res.headersSent || res.writableEnded) {
             upRes.resume();
             resolve({ ok: true, committed: true });
