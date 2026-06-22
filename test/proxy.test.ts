@@ -77,32 +77,57 @@ test("maybeApplyFix strips the internal _callType field", () => {
   assert.equal(JSON.parse(out.toString())._callType, undefined);
 });
 
-test("applyMessagesFix overwrites metadata with session_id user_id", () => {
+test("applyMessagesFix preserves an existing string user_id", () => {
   const out = applyMessagesFix(
     Buffer.from(
       JSON.stringify({
         model: "claude-sonnet-4-6",
         messages: [{ role: "user", content: "hi" }],
-        metadata: { user_id: "old-value", extra: "gone" },
+        metadata: { user_id: "caller-supplied-id", extra: "gone" },
       }),
     ),
   );
   const parsed = JSON.parse(out.toString());
   assert.deepEqual(parsed.metadata, {
-    user_id: '{"session_id":"fufu"}',
+    user_id: "caller-supplied-id",
   });
 });
 
-test("applyMessagesFix adds metadata when missing", () => {
+test("applyMessagesFix generates a uuid session_id when user_id missing", () => {
   const out = applyMessagesFix(
     Buffer.from(
       JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
     ),
   );
   const parsed = JSON.parse(out.toString());
-  assert.deepEqual(parsed.metadata, {
-    user_id: '{"session_id":"fufu"}',
-  });
+  const userId = parsed.metadata.user_id;
+  assert.equal(typeof userId, "string");
+  const inner = JSON.parse(userId);
+  assert.equal(typeof inner.session_id, "string");
+  assert.match(
+    inner.session_id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
+});
+
+test("applyMessagesFix generates a uuid session_id when metadata missing", () => {
+  const out = applyMessagesFix(
+    Buffer.from(
+      JSON.stringify({
+        model: "claude-sonnet-4-6",
+        messages: [],
+        metadata: { other: "kept?" },
+      }),
+    ),
+  );
+  const parsed = JSON.parse(out.toString());
+  const userId = parsed.metadata.user_id;
+  assert.equal(typeof userId, "string");
+  const inner = JSON.parse(userId);
+  assert.match(
+    inner.session_id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
 });
 
 test("applyMessagesFix passes through non-JSON bodies", () => {
@@ -513,8 +538,42 @@ test("e2e: /v1/messages overwrites metadata and sets anthropic-version header", 
     });
     assert.equal(versionHeader, "2023-06-01");
     assert.deepEqual(captured.metadata, {
-      user_id: '{"session_id":"fufu"}',
+      user_id: "original",
     });
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
+test("e2e: /v1/messages generates uuid session_id when metadata missing", async () => {
+  let captured: any;
+  const { proxy, upstream } = await boot({
+    upstreamHandler: async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      captured = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    },
+  });
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    await proxyRequest(port, {
+      path: "/v1/messages",
+      body: {
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "hi" }],
+      },
+    });
+    const userId = captured.metadata.user_id;
+    assert.equal(typeof userId, "string");
+    const inner = JSON.parse(userId);
+    assert.match(
+      inner.session_id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
   } finally {
     await close(proxy);
     await close(upstream);
@@ -550,9 +609,13 @@ test("e2e: prefill fix is applied to /v1/messages when last message is assistant
       role: "user",
       content: "continue",
     });
-    assert.deepEqual(captured.metadata, {
-      user_id: '{"session_id":"fufu"}',
-    });
+    const userId = captured.metadata.user_id;
+    assert.equal(typeof userId, "string");
+    const inner = JSON.parse(userId);
+    assert.match(
+      inner.session_id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
   } finally {
     await close(proxy);
     await close(upstream);

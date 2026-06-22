@@ -1,5 +1,6 @@
 import * as http from "node:http";
 import * as https from "node:https";
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   ProxyConfig,
@@ -547,7 +548,13 @@ export function applyMessagesFix(buf: Buffer): Buffer {
     return buf;
   }
   if (!body || typeof body !== "object") return buf;
-  body.metadata = { user_id: '{"session_id":"fufu"}' };
+  const existing = (body.metadata as Record<string, unknown> | undefined)
+    ?.user_id;
+  const userId =
+    typeof existing === "string" && existing.length > 0
+      ? existing
+      : JSON.stringify({ session_id: randomUUID() });
+  body.metadata = { user_id: userId };
   return Buffer.from(JSON.stringify(body));
 }
 
