@@ -5,6 +5,7 @@ export interface ProxyConfig {
   upstreamBaseUrl: string;
   upstreamApiKey: string | string[];
   upstreamHost: string;
+  upstreamHeaders: Record<string, string>;
   requestTimeoutMs: number;
   retryAttempts: number;
   retryIntervalMs: number;

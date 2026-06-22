@@ -3,6 +3,7 @@
   "upstreamBaseUrl": "https://api.openai.com",
   "upstreamApiKey": "",
   "upstreamHost": "",
+  "upstreamHeaders": {},
   "requestTimeoutMs": 600000,
   "retryAttempts": 10,
   "retryIntervalMs": 3000,

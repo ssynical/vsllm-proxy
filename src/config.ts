@@ -8,6 +8,31 @@ const DEFAULTS: ProxyConfig = {
   upstreamBaseUrl: "https://api.openai.com",
   upstreamApiKey: "",
   upstreamHost: "",
+  upstreamHeaders: {
+    "user-agent": "claude-cli/2.1.179 (external, cli)",
+    "x-app": "cli",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v24.3.0",
+    "x-stainless-package-version": "0.94.0",
+    "x-stainless-timeout": "600",
+    "x-stainless-lang": "js",
+    "x-stainless-arch": "x64",
+    "x-stainless-os": "Windows",
+    "x-stainless-retry-count": "0",
+    "anthropic-version": "2023-06-01",
+    "anthropic-beta": [
+      "claude-code-20250219",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "thinking-token-count-2026-05-13",
+      "context-management-2025-06-27",
+      "prompt-caching-scope-2026-01-05",
+      "mid-conversation-system-2026-04-07",
+      "advisor-tool-2026-03-01",
+      "effort-2025-11-24",
+    ].join(","),
+    "anthropic-dangerous-direct-browser-access": "true"
+  },
   requestTimeoutMs: 600_000,
   retryAttempts: 10,
   retryIntervalMs: 3000,
@@ -66,6 +91,10 @@ export function resolveConfig(opts: CreateProxyOpts = {}): ProxyConfig {
       DEFAULTS.enableRequestLogging,
     ),
     thinkingRestore: !!pick("thinkingRestore", DEFAULTS.thinkingRestore),
+    upstreamHeaders: {
+      ...DEFAULTS.upstreamHeaders,
+      ...((pick("upstreamHeaders", {}) as Record<string, string>) || {}),
+    },
   };
 }
 

@@ -96,29 +96,50 @@ test("maybeApplyFix never leaks _callType on the no-op path", () => {
   assert.equal(parsed.messages.length, 2);
 });
 
-test("applyMessagesFix preserves an existing string user_id", () => {
-  const out = applyMessagesFix(
+test("applyMessagesFix preserves session_id from caller user_id and strips extra fields", () => {
+  const { buf, sessionId } = applyMessagesFix(
     Buffer.from(
       JSON.stringify({
         model: "claude-sonnet-4-6",
         messages: [{ role: "user", content: "hi" }],
-        metadata: { user_id: "caller-supplied-id", extra: "gone" },
+        metadata: {
+          user_id: '{"session_id":"my-session","extra":"stripped"}',
+          other: "gone",
+        },
       }),
     ),
   );
-  const parsed = JSON.parse(out.toString());
+  const parsed = JSON.parse(buf.toString());
   assert.deepEqual(parsed.metadata, {
-    user_id: "caller-supplied-id",
+    user_id: '{"session_id":"my-session"}',
   });
+  assert.equal(sessionId, "my-session");
+});
+
+test("applyMessagesFix normalizes non-JSON user_id to new session_id", () => {
+  const { buf, sessionId } = applyMessagesFix(
+    Buffer.from(
+      JSON.stringify({
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "hi" }],
+        metadata: { user_id: "caller-supplied-id" },
+      }),
+    ),
+  );
+  const parsed = JSON.parse(buf.toString());
+  const inner = JSON.parse(parsed.metadata.user_id);
+  assert.match(
+    inner.session_id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
+  assert.equal(sessionId, inner.session_id);
 });
 
 test("applyMessagesFix generates a uuid session_id when user_id missing", () => {
-  const out = applyMessagesFix(
-    Buffer.from(
-      JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
-    ),
+  const { buf, sessionId } = applyMessagesFix(
+    Buffer.from(JSON.stringify({ model: "claude-sonnet-4-6", messages: [] })),
   );
-  const parsed = JSON.parse(out.toString());
+  const parsed = JSON.parse(buf.toString());
   const userId = parsed.metadata.user_id;
   assert.equal(typeof userId, "string");
   const inner = JSON.parse(userId);
@@ -127,10 +148,11 @@ test("applyMessagesFix generates a uuid session_id when user_id missing", () => 
     inner.session_id,
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
   );
+  assert.equal(sessionId, inner.session_id);
 });
 
 test("applyMessagesFix generates a uuid session_id when metadata missing", () => {
-  const out = applyMessagesFix(
+  const { buf, sessionId } = applyMessagesFix(
     Buffer.from(
       JSON.stringify({
         model: "claude-sonnet-4-6",
@@ -139,7 +161,7 @@ test("applyMessagesFix generates a uuid session_id when metadata missing", () =>
       }),
     ),
   );
-  const parsed = JSON.parse(out.toString());
+  const parsed = JSON.parse(buf.toString());
   const userId = parsed.metadata.user_id;
   assert.equal(typeof userId, "string");
   const inner = JSON.parse(userId);
@@ -147,11 +169,14 @@ test("applyMessagesFix generates a uuid session_id when metadata missing", () =>
     inner.session_id,
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
   );
+  assert.equal(sessionId, inner.session_id);
 });
 
 test("applyMessagesFix passes through non-JSON bodies", () => {
   const buf = Buffer.from("not json");
-  assert.equal(applyMessagesFix(buf), buf);
+  const { buf: out, sessionId } = applyMessagesFix(buf);
+  assert.deepEqual(out, buf);
+  assert.equal(sessionId, "");
 });
 
 async function boot(
@@ -533,10 +558,12 @@ test("e2e: next request resumes rotation after the previous request's retries", 
 
 test("e2e: /v1/messages overwrites metadata and sets anthropic-version header", async () => {
   let captured: any;
-  let versionHeader: string | undefined;
+  let sessionHeader: string | undefined;
   const { proxy, upstream } = await boot({
     upstreamHandler: async (req, res) => {
-      versionHeader = req.headers["anthropic-version"] as string | undefined;
+      sessionHeader = req.headers["x-claude-code-session-id"] as
+        | string
+        | undefined;
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       captured = JSON.parse(Buffer.concat(chunks).toString() || "{}");
@@ -552,12 +579,14 @@ test("e2e: /v1/messages overwrites metadata and sets anthropic-version header", 
       body: {
         model: "claude-sonnet-4-6",
         messages: [{ role: "user", content: "hi" }],
-        metadata: { user_id: "original" },
+        metadata: {
+          user_id: '{"session_id":"my-session","extra":"stripped"}',
+        },
       },
     });
-    assert.equal(versionHeader, "2023-06-01");
+    assert.equal(sessionHeader, "my-session");
     assert.deepEqual(captured.metadata, {
-      user_id: "original",
+      user_id: '{"session_id":"my-session"}',
     });
   } finally {
     await close(proxy);

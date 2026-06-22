@@ -164,6 +164,72 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function isStreamError(body: string): string | null {
+  const trimmed = body.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (parsed.error) {
+        const err = parsed.error;
+        if (typeof err === "string") return err;
+        if (typeof err === "object" && err !== null) {
+          return (
+            ((err as Record<string, unknown>).message as string) ||
+            ((err as Record<string, unknown>).type as string) ||
+            "upstream error"
+          );
+        }
+        return "upstream error";
+      }
+      if (
+        parsed.type &&
+        typeof parsed.type === "string" &&
+        parsed.type.startsWith("error")
+      ) {
+        return (parsed.message as string) || parsed.type;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  const lines = trimmed.split("\n");
+  for (const line of lines) {
+    const dataPrefix = "data: ";
+    if (!line.startsWith(dataPrefix)) continue;
+    const data = line.slice(dataPrefix.length).trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(data) as Record<string, unknown>;
+      if (parsed.error) {
+        const err = parsed.error;
+        if (typeof err === "string") return err;
+        if (typeof err === "object" && err !== null) {
+          return (
+            ((err as Record<string, unknown>).message as string) ||
+            ((err as Record<string, unknown>).type as string) ||
+            "upstream error"
+          );
+        }
+        return "upstream error";
+      }
+      if (
+        parsed.type &&
+        typeof parsed.type === "string" &&
+        parsed.type.startsWith("error")
+      ) {
+        return (parsed.message as string) || parsed.type;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
   const config = resolveConfig(opts);
 
@@ -187,21 +253,26 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
   function resolveAuth(
     req: IncomingMessage,
     keyOffset: number,
-  ): string | null {
+  ): { auth: string | null; rawKey: string | null } {
     if (upstreamKeys.length > 0) {
       const key = upstreamKeys[keyOffset % upstreamKeys.length];
-      return `Bearer ${key}`;
+      return { auth: `Bearer ${key}`, rawKey: key };
     }
     const hdr = req.headers["authorization"];
-    if (hdr) return hdr;
-    return null;
+    if (hdr) {
+      const rawKey =
+        typeof hdr === "string" ? hdr.replace(/^Bearer\s+/i, "").trim() : null;
+      return { auth: hdr, rawKey };
+    }
+    return { auth: null, rawKey: null };
   }
 
   function buildUpstreamHeaders(
     req: IncomingMessage,
     auth: string | null,
+    rawKey: string | null,
     bodyLen: number,
-    upstreamPath: string,
+    sessionId: string | null,
   ): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -210,11 +281,15 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     }
     out["host"] = config.upstreamHost;
     if (auth) out["authorization"] = auth;
+    if (rawKey) out["x-api-key"] = rawKey;
     if (bodyLen > 0) out["content-length"] = String(bodyLen);
     if (!out["accept"]) out["accept"] = "application/json";
-    if (upstreamPath === "/v1/messages") {
-      out["anthropic-version"] = "2023-06-01";
+    if (config.upstreamHeaders) {
+      for (const [k, v] of Object.entries(config.upstreamHeaders)) {
+        if (v !== undefined) out[k] = v;
+      }
     }
+    if (sessionId) out["x-claude-code-session-id"] = sessionId;
     return out;
   }
 
@@ -224,9 +299,10 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     upstreamPath: string,
     body: Buffer | null,
     keyOffset: number,
+    sessionId: string | null,
   ): Promise<AttemptResult> {
     const upstream = new URL(upstreamPath, config.upstreamBaseUrl);
-    const auth = resolveAuth(req, keyOffset);
+    const { auth, rawKey } = resolveAuth(req, keyOffset);
     if (!auth) {
       respond(res, 401, {
         error: {
@@ -241,8 +317,9 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     const outHeaders = buildUpstreamHeaders(
       req,
       auth,
+      rawKey,
       body ? body.length : 0,
-      upstreamPath,
+      sessionId,
     );
     const transport = upstream.protocol === "https:" ? https : http;
     const reqMethod = req.method ?? "?";
@@ -321,20 +398,15 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
             return;
           }
 
-          // 2xx: stream the response straight through.
+          // 2xx: buffer the response, check for stream errors, then forward.
           if (res.headersSent || res.writableEnded) {
             upRes.resume();
             resolve({ ok: true, committed: true });
             return;
           }
 
-          res.writeHead(status, upRes.headers);
-
-          res.on("error", () => {
-            upRes.destroy();
-            resolve({ ok: true, committed: true });
-          });
-
+          const chunks: Buffer[] = [];
+          upRes.on("data", (c: Buffer) => chunks.push(c));
           upRes.on("error", () => {
             if (!res.writableEnded) {
               try {
@@ -343,9 +415,33 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
             }
             resolve({ ok: true, committed: true });
           });
+          upRes.on("end", () => {
+            const resBody = Buffer.concat(chunks);
+            const errReason = isStreamError(resBody.toString("utf8"));
 
-          upRes.pipe(res, { end: true });
-          upRes.on("end", () => resolve({ ok: true, committed: true }));
+            if (errReason) {
+              resolve({ ok: false, reason: `stream error: ${errReason}` });
+              return;
+            }
+
+            if (res.headersSent || res.writableEnded) {
+              resolve({ ok: true, committed: true });
+              return;
+            }
+
+            const fwdHeaders: Record<string, string | string[]> = {};
+            for (const [k, v] of Object.entries(upRes.headers)) {
+              if (v === undefined) continue;
+              const lk = k.toLowerCase();
+              if (lk === "content-length" || lk === "transfer-encoding") {
+                continue;
+              }
+              fwdHeaders[k] = v;
+            }
+            res.writeHead(status, fwdHeaders);
+            res.end(resBody);
+            resolve({ ok: true, committed: true });
+          });
         },
       );
 
@@ -384,6 +480,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     res: ServerResponse,
     upstreamPath: string,
     body: Buffer | null,
+    sessionId: string | null,
   ): Promise<void> {
     const startKey = claimStartKey();
     let lastReason = "no attempts";
@@ -393,7 +490,14 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
       attempt++, keyOffset++
     ) {
       if (res.writableEnded || res.headersSent) return;
-      const result = await attemptOnce(req, res, upstreamPath, body, keyOffset);
+      const result = await attemptOnce(
+        req,
+        res,
+        upstreamPath,
+        body,
+        keyOffset,
+        sessionId,
+      );
       if (result.ok) return;
 
       lastReason = result.reason || lastReason;
@@ -453,9 +557,12 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     try {
       const raw = await readBody(req);
       let body: Buffer;
+      let sessionId: string | null = null;
       if (routed.callType === "messages") {
         const prefilled = maybeApplyFix(raw, routed.callType);
-        body = applyMessagesFix(prefilled);
+        const result = applyMessagesFix(prefilled);
+        body = result.buf;
+        sessionId = result.sessionId;
       } else if (routed.callType) {
         body = maybeApplyFix(raw, routed.callType);
       } else {
@@ -495,7 +602,7 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
         }
       }
 
-      await forward(req, res, routed.upstreamPath, body);
+      await forward(req, res, routed.upstreamPath, body, sessionId);
     } catch (err: unknown) {
       if (!res.headersSent && !res.writableEnded) {
         respond(res, 500, {
@@ -537,23 +644,42 @@ export function maybeApplyFix(buf: Buffer, callType: string): Buffer {
   return Buffer.from(JSON.stringify(body));
 }
 
-export function applyMessagesFix(buf: Buffer): Buffer {
-  if (!buf || buf.length === 0) return buf;
+export function applyMessagesFix(buf: Buffer): {
+  buf: Buffer;
+  sessionId: string;
+} {
+  if (!buf || buf.length === 0) {
+    return { buf, sessionId: "" };
+  }
   let body: Record<string, unknown>;
   try {
     body = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
   } catch {
-    return buf;
+    return { buf, sessionId: "" };
   }
-  if (!body || typeof body !== "object") return buf;
+  if (!body || typeof body !== "object") {
+    return { buf, sessionId: "" };
+  }
+
+  let sessionId: string = randomUUID();
   const existing = (body.metadata as Record<string, unknown> | undefined)
     ?.user_id;
-  const userId =
-    typeof existing === "string" && existing.length > 0
-      ? existing
-      : JSON.stringify({ session_id: randomUUID() });
+
+  if (typeof existing === "string" && existing.length > 0) {
+    try {
+      const parsed = JSON.parse(existing) as Record<string, unknown>;
+      if (
+        typeof parsed.session_id === "string" &&
+        parsed.session_id.length > 0
+      ) {
+        sessionId = parsed.session_id;
+      }
+    } catch {}
+  }
+
+  const userId = JSON.stringify({ session_id: sessionId });
   body.metadata = { user_id: userId };
-  return Buffer.from(JSON.stringify(body));
+  return { buf: Buffer.from(JSON.stringify(body)), sessionId };
 }
 
 export function route(pathname: string): RouteResult | null {
