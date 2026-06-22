@@ -40,7 +40,10 @@ export function buildUserMessage(content: unknown): {
   return { role: "user", content: "continue" };
 }
 
-export function applyPrefillFix(body: PrefillBody | null | undefined): boolean {
+export function applyPrefillFix(
+  body: PrefillBody | null | undefined,
+  callType: string = "",
+): boolean {
   if (!body || typeof body !== "object") return false;
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) return false;
@@ -57,7 +60,7 @@ export function applyPrefillFix(body: PrefillBody | null | undefined): boolean {
   const toolIdsStr = toolIds.length ? toolIds.join(",") : "none";
 
   console.log(
-    `[AppendContinueCallback] model=${body.model} call_type=${body._callType ?? ""} ` +
+    `[AppendContinueCallback] model=${body.model} call_type=${callType} ` +
       `action=appended count=${messages.length}->${messages.length + 1} ` +
       `tool_ids=${toolIdsStr} trace_id=${traceId}`,
   );

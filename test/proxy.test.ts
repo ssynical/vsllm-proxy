@@ -61,7 +61,7 @@ test("maybeApplyFix passes through non-JSON bodies", () => {
   assert.equal(maybeApplyFix(buf, "completion"), buf);
 });
 
-test("maybeApplyFix strips the internal _callType field", () => {
+test("maybeApplyFix forwards the body without _callType on the success path", () => {
   const out = maybeApplyFix(
     Buffer.from(
       JSON.stringify({
@@ -75,6 +75,25 @@ test("maybeApplyFix strips the internal _callType field", () => {
     "completion",
   );
   assert.equal(JSON.parse(out.toString())._callType, undefined);
+});
+
+test("maybeApplyFix never leaks _callType on the no-op path", () => {
+  const out = maybeApplyFix(
+    Buffer.from(
+      JSON.stringify({
+        model: "claude-sonnet-4-5",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "hi back" },
+        ],
+      }),
+    ),
+    "completion",
+  );
+  const parsed = JSON.parse(out.toString());
+  assert.equal(parsed._callType, undefined);
+  assert.equal(parsed.model, "claude-sonnet-4-5");
+  assert.equal(parsed.messages.length, 2);
 });
 
 test("applyMessagesFix preserves an existing string user_id", () => {

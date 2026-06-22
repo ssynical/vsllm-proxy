@@ -45,7 +45,6 @@ export interface PrefillBody {
   messages?: Array<{ role: string; content: unknown; [key: string]: unknown }>;
   metadata?: { trace_id?: string };
   litellm_trace_id?: string;
-  _callType?: string;
   [key: string]: unknown;
 }
 

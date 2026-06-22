@@ -532,10 +532,8 @@ export function maybeApplyFix(buf: Buffer, callType: string): Buffer {
     return buf;
   }
   if (!body || typeof body !== "object") return buf;
-  body._callType = callType;
-  const changed = applyPrefillFix(body);
+  const changed = applyPrefillFix(body, callType);
   if (!changed) return buf;
-  delete body._callType;
   return Buffer.from(JSON.stringify(body));
 }
 
