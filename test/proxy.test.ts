@@ -410,6 +410,83 @@ test("e2e: upstreamApiKey array rotates round-robin across requests", async () =
   }
 });
 
+test("e2e: keys rotate across retries within a single request", async () => {
+  const seen: string[] = [];
+  let hits = 0;
+  const { proxy, upstream } = await boot(
+    {
+      upstreamHandler: (req, res) => {
+        hits++;
+        seen.push(req.headers["authorization"] ?? "");
+        if (hits < 3) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "temp" }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      },
+    },
+    { upstreamApiKey: ["key-a", "key-b", "key-c"], retryIntervalMs: 5 },
+  );
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    const out = await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(out.status, 200);
+    assert.equal(hits, 3);
+    assert.deepEqual(seen, ["Bearer key-a", "Bearer key-b", "Bearer key-c"]);
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
+test("e2e: next request resumes rotation after the previous request's retries", async () => {
+  const seen: string[] = [];
+  let hits = 0;
+  const { proxy, upstream } = await boot(
+    {
+      upstreamHandler: (req, res) => {
+        hits++;
+        seen.push(req.headers["authorization"] ?? "");
+        if (hits <= 2) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "temp" }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      },
+    },
+    { upstreamApiKey: ["key-a", "key-b", "key-c"], retryIntervalMs: 5 },
+  );
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.deepEqual(seen, [
+      "Bearer key-a",
+      "Bearer key-b",
+      "Bearer key-c",
+      "Bearer key-b",
+    ]);
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
 test("e2e: /v1/messages overwrites metadata and sets anthropic-version header", async () => {
   let captured: any;
   let versionHeader: string | undefined;

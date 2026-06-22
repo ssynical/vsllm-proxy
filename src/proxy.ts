@@ -174,12 +174,21 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
         config.upstreamApiKey.length > 0
       ? [config.upstreamApiKey]
       : [];
-  let keyIndex = 0;
+  let nextStartKeyIndex = 0;
 
-  function resolveAuth(req: IncomingMessage): string | null {
+  function claimStartKey(): number {
+    if (upstreamKeys.length === 0) return 0;
+    const idx = nextStartKeyIndex;
+    nextStartKeyIndex = (nextStartKeyIndex + 1) % upstreamKeys.length;
+    return idx;
+  }
+
+  function resolveAuth(
+    req: IncomingMessage,
+    keyOffset: number,
+  ): string | null {
     if (upstreamKeys.length > 0) {
-      const key = upstreamKeys[keyIndex % upstreamKeys.length];
-      keyIndex = (keyIndex + 1) % upstreamKeys.length;
+      const key = upstreamKeys[keyOffset % upstreamKeys.length];
       return `Bearer ${key}`;
     }
     const hdr = req.headers["authorization"];
@@ -213,9 +222,10 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     res: ServerResponse,
     upstreamPath: string,
     body: Buffer | null,
+    keyOffset: number,
   ): Promise<AttemptResult> {
     const upstream = new URL(upstreamPath, config.upstreamBaseUrl);
-    const auth = resolveAuth(req);
+    const auth = resolveAuth(req, keyOffset);
     if (!auth) {
       respond(res, 401, {
         error: {
@@ -374,10 +384,15 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
     upstreamPath: string,
     body: Buffer | null,
   ): Promise<void> {
+    const startKey = claimStartKey();
     let lastReason = "no attempts";
-    for (let attempt = 1; attempt <= config.retryAttempts; attempt++) {
+    for (
+      let attempt = 1, keyOffset = startKey;
+      attempt <= config.retryAttempts;
+      attempt++, keyOffset++
+    ) {
       if (res.writableEnded || res.headersSent) return;
-      const result = await attemptOnce(req, res, upstreamPath, body);
+      const result = await attemptOnce(req, res, upstreamPath, body, keyOffset);
       if (result.ok) return;
 
       lastReason = result.reason || lastReason;
