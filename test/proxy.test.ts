@@ -444,6 +444,44 @@ test("e2e: /v1/messages overwrites metadata and sets anthropic-version header", 
   }
 });
 
+test("e2e: prefill fix is applied to /v1/messages when last message is assistant", async () => {
+  let captured: any;
+  const { proxy, upstream } = await boot({
+    upstreamHandler: async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      captured = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    },
+  });
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    await proxyRequest(port, {
+      path: "/v1/messages",
+      body: {
+        model: "claude-sonnet-4-6",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "hi back" },
+        ],
+      },
+    });
+    assert.equal(captured.messages.length, 3);
+    assert.deepEqual(captured.messages[2], {
+      role: "user",
+      content: "continue",
+    });
+    assert.deepEqual(captured.metadata, {
+      user_id: '{"session_id":"fufu"}',
+    });
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
 test("e2e: retries a retryable status then succeeds", async () => {
   let hits = 0;
   const { proxy, upstream } = await boot({

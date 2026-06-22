@@ -167,8 +167,11 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
   const config = resolveConfig(opts);
 
   const upstreamKeys: string[] = Array.isArray(config.upstreamApiKey)
-    ? config.upstreamApiKey.filter((k): k is string => typeof k === "string" && k.length > 0)
-    : typeof config.upstreamApiKey === "string" && config.upstreamApiKey.length > 0
+    ? config.upstreamApiKey.filter(
+        (k): k is string => typeof k === "string" && k.length > 0,
+      )
+    : typeof config.upstreamApiKey === "string" &&
+        config.upstreamApiKey.length > 0
       ? [config.upstreamApiKey]
       : [];
   let keyIndex = 0;
@@ -224,7 +227,12 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
       return Promise.resolve({ ok: true, committed: true });
     }
 
-    const outHeaders = buildUpstreamHeaders(req, auth, body ? body.length : 0, upstreamPath);
+    const outHeaders = buildUpstreamHeaders(
+      req,
+      auth,
+      body ? body.length : 0,
+      upstreamPath,
+    );
     const transport = upstream.protocol === "https:" ? https : http;
     const reqMethod = req.method ?? "?";
 
@@ -430,7 +438,8 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
       const raw = await readBody(req);
       let body: Buffer;
       if (routed.callType === "messages") {
-        body = applyMessagesFix(raw);
+        const prefilled = maybeApplyFix(raw, routed.callType);
+        body = applyMessagesFix(prefilled);
       } else if (routed.callType) {
         body = maybeApplyFix(raw, routed.callType);
       } else {
