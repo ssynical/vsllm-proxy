@@ -30,7 +30,7 @@ const HOP_BY_HOP = new Set([
   "content-length",
 ]);
 
-const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 504]);
 
 function flattenHeaders(
   headers: IncomingMessage["headers"],

@@ -488,7 +488,7 @@ test("e2e: keys rotate across retries within a single request", async () => {
         hits++;
         seen.push(req.headers["authorization"] ?? "");
         if (hits < 3) {
-          res.writeHead(503, { "content-type": "application/json" });
+          res.writeHead(429, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "temp" }));
           return;
         }
@@ -523,7 +523,7 @@ test("e2e: next request resumes rotation after the previous request's retries", 
         hits++;
         seen.push(req.headers["authorization"] ?? "");
         if (hits <= 2) {
-          res.writeHead(503, { "content-type": "application/json" });
+          res.writeHead(429, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "temp" }));
           return;
         }
@@ -676,7 +676,7 @@ test("e2e: retries a retryable status then succeeds", async () => {
     upstreamHandler: (req, res) => {
       hits++;
       if (hits < 3) {
-        res.writeHead(503, { "content-type": "application/json" });
+        res.writeHead(429, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "temp" }));
         return;
       }
