@@ -7,6 +7,7 @@ import {
   maybeApplyFix,
   applyMessagesFix,
   resolveConfig,
+  isStreamError,
 } from "../src/proxy.js";
 import {
   extractThinkingProps,
@@ -757,6 +758,99 @@ test("e2e: gives up after retryAttempts and returns 502", async () => {
   }
 });
 
+test("e2e: 2xx with SSE error body is retried and ultimately succeeds", async () => {
+  let hits = 0;
+  const { proxy, upstream } = await boot(
+    {
+      upstreamHandler: (req, res) => {
+        hits++;
+        if (hits < 2) {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.end(
+            "data: {\"error\":{\"message\":\"overloaded\",\"type\":\"overloaded_error\"}}\n\n",
+          );
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end("data: {\"id\":\"evt_1\",\"choices\":[]}\n\ndata: [DONE]\n");
+      },
+    },
+    { retryAttempts: 3, retryIntervalMs: 5 },
+  );
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    const out = await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(out.status, 200);
+    assert.equal(hits, 2);
+    assert.ok(out.body.includes("[DONE]"));
+    assert.ok(!out.body.includes("overloaded"));
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
+test("e2e: 2xx with SSE error body is retried up to retryAttempts then returns 502", async () => {
+  let hits = 0;
+  const { proxy, upstream } = await boot(
+    {
+      upstreamHandler: (req, res) => {
+        hits++;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(
+          "data: {\"error\":{\"message\":\"overloaded\",\"type\":\"overloaded_error\"}}\n\n",
+        );
+      },
+    },
+    { retryAttempts: 3, retryIntervalMs: 5 },
+  );
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    const out = await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(out.status, 502);
+    assert.equal(hits, 3);
+    const parsed = JSON.parse(out.body);
+    assert.equal(parsed.error.type, "upstream_unavailable");
+    assert.ok(parsed.error.message.includes("stream error: overloaded"));
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
+test("e2e: 2xx with non-error JSON body is forwarded unchanged", async () => {
+  let hits = 0;
+  const { proxy, upstream } = await boot({
+    upstreamHandler: (req, res) => {
+      hits++;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, hits }));
+    },
+  });
+
+  try {
+    const port = (proxy.address() as { port: number }).port;
+    const out = await proxyRequest(port, {
+      path: "/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(out.status, 200);
+    assert.equal(hits, 1);
+    assert.deepEqual(JSON.parse(out.body), { ok: true, hits: 1 });
+  } finally {
+    await close(proxy);
+    await close(upstream);
+  }
+});
+
 test("e2e: non-retryable status (400) is returned immediately, not retried", async () => {
   let hits = 0;
   const { proxy, upstream } = await boot({
@@ -918,6 +1012,55 @@ test("applyThinkingRestore is a no-op even when enabled (placeholder)", () => {
   const body = { model: "gpt-4o" };
   assert.equal(applyThinkingRestore(body, true), false);
   assert.deepEqual(body, { model: "gpt-4o" });
+});
+
+test("isStreamError detects a JSON object error body", () => {
+  const reason = isStreamError(
+    JSON.stringify({ error: { message: "overloaded", type: "overloaded_error" } }),
+  );
+  assert.equal(reason, "overloaded");
+});
+
+test("isStreamError detects a top-level error string", () => {
+  const reason = isStreamError(JSON.stringify({ error: "rate limited" }));
+  assert.equal(reason, "rate limited");
+});
+
+test("isStreamError detects a type=error... body", () => {
+  const reason = isStreamError(
+    JSON.stringify({ type: "error", message: "internal error" }),
+  );
+  assert.equal(reason, "internal error");
+});
+
+test("isStreamError detects an SSE data: line carrying an error", () => {
+  const sse =
+    "data: {\"id\":\"evt_1\"}\n\n" +
+    "data: {\"error\":{\"message\":\"stream interrupted\",\"type\":\"server_error\"}}\n\n" +
+    "data: [DONE]\n";
+  const reason = isStreamError(sse);
+  assert.equal(reason, "stream interrupted");
+});
+
+test("isStreamError returns null for a clean SSE stream", () => {
+  const sse =
+    "data: {\"id\":\"evt_1\",\"choices\":[]}\n\n" +
+    "data: [DONE]\n";
+  assert.equal(isStreamError(sse), null);
+});
+
+test("isStreamError returns null for empty or non-error body", () => {
+  assert.equal(isStreamError(""), null);
+  assert.equal(isStreamError("   "), null);
+  assert.equal(isStreamError(JSON.stringify({ ok: true })), null);
+  assert.equal(isStreamError("data: {\"id\":\"evt_1\"}\n\n"), null);
+});
+
+test("isStreamError skips malformed SSE data lines without throwing", () => {
+  const sse =
+    "data: not-json\n\n" +
+    "data: {\"error\":\"boom\"}\n\n";
+  assert.equal(isStreamError(sse), "boom");
 });
 
 test("e2e: logs model and thinking properties to stdout", async () => {

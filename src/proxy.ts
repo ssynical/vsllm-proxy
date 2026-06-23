@@ -164,7 +164,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function isStreamError(body: string): string | null {
+export function isStreamError(body: string): string | null {
   const trimmed = body.trim();
   if (!trimmed) return null;
 
