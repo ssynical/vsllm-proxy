@@ -838,6 +838,39 @@ test("resolveConfig opts override config.json", () => {
   assert.equal(cfg.retryIntervalMs, 50);
 });
 
+test("default upstreamHeaders are populated with dynamic versions", () => {
+  const cfg = resolveConfig({ _skipFile: true });
+  assert.match(cfg.upstreamHeaders["user-agent"], /^claude-cli\/\d+\.\d+\.\d+ /);
+  assert.match(
+    cfg.upstreamHeaders["x-stainless-package-version"],
+    /^\d+\.\d+\.\d+$/,
+  );
+  assert.match(
+    cfg.upstreamHeaders["x-stainless-runtime-version"],
+    /^v\d+\.\d+\.\d+$/,
+  );
+  assert.equal(cfg.upstreamHeaders["x-stainless-runtime"], "node");
+  assert.ok(cfg.upstreamHeaders["x-stainless-arch"].length > 0);
+  assert.ok(cfg.upstreamHeaders["x-stainless-os"].length > 0);
+  assert.equal(
+    cfg.upstreamHeaders["anthropic-dangerous-direct-browser-access"],
+    "true",
+  );
+  assert.ok(
+    cfg.upstreamHeaders["anthropic-beta"].includes("claude-code-20250219"),
+  );
+});
+
+test("upstreamHeaders from opts override defaults", () => {
+  const cfg = resolveConfig({
+    _skipFile: true,
+    upstreamHeaders: { "x-app": "custom", "x-stainless-os": "Linux" },
+  });
+  assert.equal(cfg.upstreamHeaders["x-app"], "custom");
+  assert.equal(cfg.upstreamHeaders["x-stainless-os"], "Linux");
+  assert.match(cfg.upstreamHeaders["user-agent"], /^claude-cli\/\d+\.\d+\.\d+ /);
+});
+
 test("extractThinkingProps captures model and known thinking keys", () => {
   const props = extractThinkingProps({
     model: "claude-sonnet-4-6",
