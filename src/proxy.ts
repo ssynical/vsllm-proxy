@@ -14,7 +14,6 @@ import { applyPrefillFix, modelNeedsFix } from "./prefill-fix.js";
 import {
   extractThinkingProps,
   formatThinkingLog,
-  applyThinkingRestore,
 } from "./thinking-restore.js";
 
 const HOP_BY_HOP = new Set([
@@ -583,14 +582,6 @@ export function createProxyServer(opts: CreateProxyOpts = {}): ProxyServer {
         }
 
         if (parsedBody) {
-          const restoreChanged = applyThinkingRestore(
-            parsedBody,
-            config.thinkingRestore,
-          );
-          if (restoreChanged) {
-            body = Buffer.from(JSON.stringify(parsedBody));
-          }
-
           const props = extractThinkingProps(parsedBody);
           console.log(
             `[vsllm-proxy] ${req.method} ${pathname} ${formatThinkingLog(props)}`,
@@ -706,5 +697,4 @@ export { modelNeedsFix } from "./prefill-fix.js";
 export {
   extractThinkingProps,
   formatThinkingLog,
-  applyThinkingRestore,
 } from "./thinking-restore.js";

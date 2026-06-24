@@ -23,6 +23,12 @@ test("modelNeedsFix does not match older Claude models", () => {
   assert.ok(!modelNeedsFix("gpt-4o"));
 });
 
+test("modelNeedsFix does not false-positive on 4-55 or 4-50", () => {
+  assert.ok(!modelNeedsFix("claude-sonnet-4-55"));
+  assert.ok(!modelNeedsFix("claude-opus-4-50"));
+  assert.ok(!modelNeedsFix("claude-sonnet-4-55-20260101"));
+});
+
 test("buildUserMessage returns a plain continue when no tool_use", () => {
   assert.deepEqual(buildUserMessage("text"), {
     role: "user",

@@ -1,7 +1,7 @@
 import type { PrefillBody } from "./types.js";
 
 const NO_PREFILL_RE =
-  /claude-(?:sonnet|opus|haiku)-4-([6-9]|\d{2,})|claude-(?:sonnet|opus|haiku)-([5-9]|\d{2,})-|claude-mythos/;
+  /(?:^claude-(?:sonnet|opus|haiku)-4-[6-9](?:-\d{8})?$)|(?:^claude-(?:sonnet|opus|haiku)-[5-9](?:-\d{8})?$)|(?:^claude-(?:sonnet|opus|haiku)-(?:[5-9]|\d{2,})-)|(?:^claude-mythos$)/;
 
 export function modelNeedsFix(model: unknown): boolean {
   return typeof model === "string" && NO_PREFILL_RE.test(model.toLowerCase());

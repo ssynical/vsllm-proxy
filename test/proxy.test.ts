@@ -12,7 +12,6 @@ import {
 import {
   extractThinkingProps,
   formatThinkingLog,
-  applyThinkingRestore,
 } from "../src/thinking-restore.js";
 import type { ProxyServer } from "../src/types.js";
 
@@ -1000,18 +999,6 @@ test("formatThinkingLog serializes objects as JSON", () => {
     thinking: { type: "enabled", budget_tokens: 2000 },
   });
   assert.ok(line.includes('thinking={"type":"enabled","budget_tokens":2000}'));
-});
-
-test("applyThinkingRestore is a no-op by default", () => {
-  const body = { model: "gpt-4o" };
-  assert.equal(applyThinkingRestore(body, false), false);
-  assert.deepEqual(body, { model: "gpt-4o" });
-});
-
-test("applyThinkingRestore is a no-op even when enabled (placeholder)", () => {
-  const body = { model: "gpt-4o" };
-  assert.equal(applyThinkingRestore(body, true), false);
-  assert.deepEqual(body, { model: "gpt-4o" });
 });
 
 test("isStreamError detects a JSON object error body", () => {

@@ -82,7 +82,6 @@ const DEFAULTS: ProxyConfig = {
   retryAttempts: 10,
   retryIntervalMs: 3000,
   enableRequestLogging: true,
-  thinkingRestore: false,
 };
 
 export function loadConfigFile(): Record<string, unknown> {
@@ -135,7 +134,6 @@ export function resolveConfig(opts: CreateProxyOpts = {}): ProxyConfig {
       "enableRequestLogging",
       DEFAULTS.enableRequestLogging,
     ),
-    thinkingRestore: !!pick("thinkingRestore", DEFAULTS.thinkingRestore),
     upstreamHeaders: {
       ...DEFAULTS.upstreamHeaders,
       ...((pick("upstreamHeaders", {}) as Record<string, string>) || {}),

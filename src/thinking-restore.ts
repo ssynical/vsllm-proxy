@@ -32,14 +32,3 @@ export function formatThinkingLog(props: ThinkingProps): string {
     })
     .join(" ");
 }
-
-export function applyThinkingRestore(
-  body: Record<string, unknown> | null | undefined,
-  enabled: boolean,
-): boolean {
-  if (!enabled) return false;
-  if (!body || typeof body !== "object") return false;
-  return false;
-}
-
-export const THINKING_KEYS_EXPORT = THINKING_KEYS;

@@ -10,7 +10,6 @@ export interface ProxyConfig {
   retryAttempts: number;
   retryIntervalMs: number;
   enableRequestLogging: boolean;
-  thinkingRestore: boolean;
 }
 
 export interface RouteResult {
